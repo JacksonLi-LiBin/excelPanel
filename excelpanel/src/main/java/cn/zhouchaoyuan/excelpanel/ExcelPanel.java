@@ -11,6 +11,9 @@ import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
 
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -50,7 +53,7 @@ public class ExcelPanel extends FrameLayout implements ViewTreeObserver.OnGlobal
     protected RecyclerView leftRecyclerView;
     protected BaseExcelPanelAdapter excelPanelAdapter;
     private static Map<Integer, Integer> indexHeight;
-    private static Map<Integer, Integer> indexWidth;
+    private List<OnScrollListener> mScrollListeners;
 
     private OnLoadMoreListener onLoadMoreListener;
 
@@ -85,7 +88,6 @@ public class ExcelPanel extends FrameLayout implements ViewTreeObserver.OnGlobal
             a.recycle();
         }
         indexHeight = new TreeMap<>();
-        indexWidth = new TreeMap<>();
         loadingViewWidth = Utils.dp2px(LOADING_VIEW_WIDTH, getContext());
         initWidget();
     }
@@ -125,7 +127,7 @@ public class ExcelPanel extends FrameLayout implements ViewTreeObserver.OnGlobal
 
     @Override
     public void onGlobalLayout() {
-        if (getMeasuredHeight() != dividerHeight) {
+        if (dividerHeight == getMeasuredHeight() && getMeasuredHeight() != 0) {
             getViewTreeObserver().removeOnGlobalLayoutListener(this);
         }
         LayoutParams lineLp1 = (LayoutParams) dividerLine.getLayoutParams();
@@ -148,7 +150,7 @@ public class ExcelPanel extends FrameLayout implements ViewTreeObserver.OnGlobal
     }
 
     protected RecyclerView createMajorContent() {
-        RecyclerView recyclerView = new RecyclerView(getContext());
+        RecyclerView recyclerView = new ExcelMajorRecyclerView(getContext());
         recyclerView.setLayoutManager(getLayoutManager());
         recyclerView.addOnScrollListener(contentScrollListener);
         return recyclerView;
@@ -204,6 +206,17 @@ public class ExcelPanel extends FrameLayout implements ViewTreeObserver.OnGlobal
             amountAxisX += dx;
             fastScrollTo(amountAxisX, mRecyclerView, loadingViewWidth, hasHeader);
             fastScrollTo(amountAxisX, topRecyclerView, loadingViewWidth, hasHeader);
+            if (dx == 0 && dy == 0) {
+                return;
+            }
+            if (mScrollListeners != null) {
+                for (int i = mScrollListeners.size() - 1; i >= 0; i--) {
+                    OnScrollListener listener = mScrollListeners.get(i);
+                    if (listener != null) {
+                        listener.onScrolled(ExcelPanel.this, dx, dy);
+                    }
+                }
+            }
             LinearLayoutManager manager = (LinearLayoutManager) recyclerView.getLayoutManager();
             int visibleItemCount = recyclerView.getChildCount();
             int totalItemCount = manager.getItemCount();
@@ -235,7 +248,16 @@ public class ExcelPanel extends FrameLayout implements ViewTreeObserver.OnGlobal
         @Override
         public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
             super.onScrolled(recyclerView, dx, dy);
+            //if (dy == 0) {return;} can't do this if use reset(amountAxisY==0),excelPanel will dislocation
             amountAxisY += dy;
+            if (mScrollListeners != null) {
+                for (int i = mScrollListeners.size() - 1; i >= 0; i--) {
+                    OnScrollListener listener = mScrollListeners.get(i);
+                    if (listener != null) {
+                        listener.onScrolled(ExcelPanel.this, dx, dy);
+                    }
+                }
+            }
             for (int i = 0; i < mRecyclerView.getChildCount(); i++) {
                 if (mRecyclerView.getChildAt(i) instanceof RecyclerView) {
                     RecyclerView recyclerView1 = (RecyclerView) mRecyclerView.getChildAt(i);
@@ -255,8 +277,23 @@ public class ExcelPanel extends FrameLayout implements ViewTreeObserver.OnGlobal
 
     static void fastScrollVertical(int amountAxis, RecyclerView recyclerView) {
         LinearLayoutManager linearLayoutManager = (LinearLayoutManager) recyclerView.getLayoutManager();
-        //call this method the OnScrollListener's onScrolled will be called，but dx and dy always be zero.
-        linearLayoutManager.scrollToPositionWithOffset(0, -amountAxis);
+        if (indexHeight == null) {
+            indexHeight = new TreeMap<>();
+            //call this method the OnScrollListener's onScrolled will be called，but dx and dy always be zero.
+            linearLayoutManager.scrollToPositionWithOffset(0, -amountAxis);
+        } else {
+            int total = 0, count = 0;
+            Iterator<Integer> iterator = indexHeight.keySet().iterator();
+            while (null != iterator && iterator.hasNext()) {
+                int height = indexHeight.get(iterator.next());
+                if (total + height >= amountAxis) {
+                    break;
+                }
+                total += height;
+                count++;
+            }
+            linearLayoutManager.scrollToPositionWithOffset(count, -(amountAxis - total));
+        }
     }
 
     private void fastScrollTo(int amountAxis, RecyclerView recyclerView, int offset, boolean hasHeader) {
@@ -295,30 +332,6 @@ public class ExcelPanel extends FrameLayout implements ViewTreeObserver.OnGlobal
         }
     }
 
-    @Override
-    protected void onAttachedToWindow() {
-        super.onAttachedToWindow();
-        if (indexHeight == null) {
-            indexHeight = new TreeMap<>();
-        }
-        if (indexWidth == null) {
-            indexWidth = new TreeMap<>();
-        }
-    }
-
-    @Override
-    protected void onDetachedFromWindow() {
-        super.onDetachedFromWindow();
-        if (indexWidth != null) {
-            indexWidth.clear();
-        }
-        if (indexHeight != null) {
-            indexHeight.clear();
-        }
-        indexHeight = null;
-        indexWidth = null;
-    }
-
     /**
      * @param dx horizontal distance to scroll
      */
@@ -350,11 +363,7 @@ public class ExcelPanel extends FrameLayout implements ViewTreeObserver.OnGlobal
         if (indexHeight == null) {
             indexHeight = new TreeMap<>();
         }
-        if (indexWidth == null) {
-            indexWidth = new TreeMap<>();
-        }
         indexHeight.clear();
-        indexWidth.clear();
         amountAxisY = 0;
         amountAxisX = 0;
         getViewTreeObserver().addOnGlobalLayoutListener(this);
@@ -382,4 +391,63 @@ public class ExcelPanel extends FrameLayout implements ViewTreeObserver.OnGlobal
     public void enableDividerLine(boolean visible) {
         dividerLineVisible = visible;
     }
+
+    /**
+     * use to adjust the height and width of the normal cell
+     *
+     * @param holder   cell's holder
+     * @param position horizontal or vertical position
+     */
+    public void onAfterBind(RecyclerView.ViewHolder holder, int position) {
+        if (holder != null && holder.itemView != null) {
+            if (indexHeight == null) {
+                indexHeight = new TreeMap<>();
+            }
+            ViewGroup.LayoutParams layoutParams = holder.itemView.getLayoutParams();
+            indexHeight.put(position, layoutParams.height);
+        }
+    }
+
+    public void addOnScrollListener(OnScrollListener listener) {
+        if (mScrollListeners == null) {
+            mScrollListeners = new ArrayList<>();
+        }
+        mScrollListeners.add(listener);
+    }
+
+    public void removeOnScrollListener(OnScrollListener listener) {
+        if (mScrollListeners != null) {
+            mScrollListeners.remove(listener);
+        }
+    }
+
+    public void clearOnScrollListeners() {
+        if (mScrollListeners != null) {
+            mScrollListeners.clear();
+        }
+    }
+
+    /**
+     * An OnScrollListener can be added to a ExcelPanel to receive messages when a
+     * scrolling event has occurred on that ExcelPanel.
+     * <p>
+     *
+     * @see ExcelPanel#addOnScrollListener(OnScrollListener)
+     */
+    public abstract static class OnScrollListener {
+        /**
+         * Callback method to be invoked when the ExcelPanel has been scrolled. This will be
+         * called after the scroll has completed.
+         * <p>
+         * This callback will also be called if visible item range changes after a layout
+         * calculation. In that case, dx and dy will be 0.
+         *
+         * @param excelPanel The ExcelPanel which scrolled.
+         * @param dx         The amount of horizontal scroll.
+         * @param dy         The amount of vertical scroll.
+         */
+        public void onScrolled(ExcelPanel excelPanel, int dx, int dy) {
+        }
+    }
+
 }
